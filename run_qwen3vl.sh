@@ -8,7 +8,7 @@ set -euo pipefail
 
 INPUT_JSONL="${1:/kaggle/input/datasets/trnlqung/vitext-vqa/ViTextVQA_train.json}"
 OUTPUT_JSONL="${2:-scored.jsonl}"
-IMAGE_ROOT="${3:-.}"
+IMAGE_ROOT="${3:/kaggle/input/datasets/trnlqung/vitext-vqa/ViTextVQA_images/st_images}"
 EXTRA_ARGS=("${@:4}")
 
 python main/qwen3vl_vqa_difficulty.py \
