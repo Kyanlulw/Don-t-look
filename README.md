@@ -15,30 +15,17 @@ pip install -U transformers accelerate bitsandbytes pillow sentencepiece
 
 Recommended T4 run:
 
-```powershell
-python qwen3vl_vqa_difficulty.py `
-  --input data.jsonl `
-  --output scored.jsonl `
-  --image-root . `
-  --model Qwen/Qwen3-VL-4B-Instruct `
-  --batch-size 1 `
-  --max-new-tokens 96 `
-  --short-side 768 `
-  --long-side 1280 `
-  --max-pixels 983040 `
-  --double-quant
+```bash
+chmod +x run_qwen3vl.sh
+./run_qwen3vl.sh data.jsonl scored.jsonl .
 ```
 
 If memory is stable, try:
 
-```powershell
-python qwen3vl_vqa_difficulty.py `
-  --input data.jsonl `
-  --output scored.jsonl `
-  --image-root . `
-  --batch-size 2 `
-  --short-side 640 `
-  --long-side 1024 `
-  --max-pixels 655360 `
-  --double-quant
+```bash
+./run_qwen3vl.sh data.jsonl scored.jsonl . \
+  --batch-size 2 \
+  --short-side 640 \
+  --long-side 1024 \
+  --max-pixels 655360
 ```
