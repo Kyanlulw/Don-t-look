@@ -55,7 +55,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Score OCR-VQA difficulty with Qwen3-VL and write JSONL results."
     )
-    parser.add_argument("--input", type=Path, required=True, help="Input JSONL file.")
+    parser.add_argument(
+        "--input",
+        type=Path,
+        required=True,
+        help="Input file (.jsonl with flat rows or ViTextVQA-style .json).",
+    )
     parser.add_argument("--output", type=Path, required=True, help="Output JSONL file.")
     parser.add_argument(
         "--model",
@@ -223,6 +228,74 @@ def iter_jsonl(path: Path) -> Iterable[Dict[str, Any]]:
                 yield json.loads(line)
             except json.JSONDecodeError as exc:
                 raise ValueError(f"Invalid JSON on line {line_no} of {path}") from exc
+
+
+def iter_vitextvqa_json(path: Path) -> Iterable[Dict[str, Any]]:
+    with path.open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+
+    images = payload.get("images")
+    annotations = payload.get("annotations")
+    if not isinstance(images, list) or not isinstance(annotations, list):
+        raise ValueError(
+            "Expected top-level 'images' and 'annotations' lists for ViTextVQA JSON input."
+        )
+
+    images_by_id = {}
+    for image in images:
+        if isinstance(image, dict) and "id" in image:
+            images_by_id[image.get("id")] = image
+
+    for ann_index, ann in enumerate(annotations, start=1):
+        if not isinstance(ann, dict):
+            continue
+
+        image_id = ann.get("image_id")
+        image_entry = images_by_id.get(image_id)
+
+        # ViTextVQA exports sometimes use image_id as an index into images.
+        if image_entry is None and isinstance(image_id, int) and 0 <= image_id < len(images):
+            maybe_image = images[image_id]
+            if isinstance(maybe_image, dict):
+                image_entry = maybe_image
+
+        if image_entry is None:
+            raise ValueError(
+                f"Could not resolve image for annotation index {ann_index} with image_id={image_id}."
+            )
+
+        image_value = image_entry.get("filename") or image_entry.get("image")
+        if not image_value:
+            raise ValueError(
+                f"Missing image filename for annotation index {ann_index} (image_id={image_id})."
+            )
+
+        answers = ann.get("answers")
+        if isinstance(answers, list) and answers:
+            answer_value = answers[0]
+        else:
+            answer_value = ann.get("answer", "")
+
+        yield {
+            "id": ann.get("id", ann_index),
+            "image": str(image_value),
+            "question": str(ann.get("question", "")),
+            "answer": str(answer_value),
+        }
+
+
+def iter_input_samples(path: Path) -> Iterable[Dict[str, Any]]:
+    if path.suffix.lower() == ".jsonl":
+        yield from iter_jsonl(path)
+        return
+
+    if path.suffix.lower() == ".json":
+        yield from iter_vitextvqa_json(path)
+        return
+
+    raise ValueError(
+        f"Unsupported input format for {path}. Use .jsonl or ViTextVQA-style .json"
+    )
 
 
 def resolve_image_path(raw_path: str, image_root: Optional[Path]) -> Path:
@@ -396,7 +469,7 @@ def main() -> None:
 
     done_ids = load_done_ids(args.output, args.id_key)
     all_samples = []
-    for sample in iter_jsonl(args.input):
+    for sample in iter_input_samples(args.input):
         sample_id = sample.get(args.id_key)
         if sample_id is not None and str(sample_id) in done_ids:
             continue
