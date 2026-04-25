@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# set -euo pipefail
 
 # Usage:
 #   ./run_qwen3vl.sh [input_jsonl] [output_jsonl] [image_root] [extra args...]
