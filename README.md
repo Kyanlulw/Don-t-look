@@ -24,6 +24,14 @@ chmod +x run_qwen3vl.sh
 ./run_qwen3vl.sh data.jsonl scored.jsonl .
 ```
 
+By default, `run_qwen3vl.sh` runs only the first 100 pending samples.
+To run a different number, pass `--limit N`.
+Example:
+
+```bash
+./run_qwen3vl.sh data.jsonl scored.jsonl . --limit 500
+```
+
 Run directly on ViTextVQA JSON:
 
 ```bash
