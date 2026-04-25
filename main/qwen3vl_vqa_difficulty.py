@@ -19,6 +19,17 @@ SYSTEM_PROMPT = (
     "You must return exactly one valid JSON object and nothing else."
 )
 
+DEFAULT_WEIGHTS_FILE = Path(__file__).with_name("difficulty_weights.json")
+
+WEIGHTS = {
+    "text_visibility": 0.25,
+    "ocr_ambiguity": 0.20,
+    "linguistic_complexity": 0.20,
+    "text_density": 0.15,
+    "reasoning_required": 0.12,
+    "text_orientation": 0.08,
+}
+
 
 def build_scoring_prompt(question: str, answer: str) -> str:
     return f"""Evaluate OCR-VQA difficulty for this sample.
@@ -44,9 +55,7 @@ Return ONLY valid JSON using full keys exactly (no abbreviations):
     "linguistic_complexity": <1-5>,
     "reasoning_required": <1-5>,
     "ocr_ambiguity": <1-5>
-  }},
-  "weighted_difficulty": <float 1.0-5.0>,
-  "difficulty_tier": <"easy"|"medium"|"hard"|"very_hard">
+  }}
 }}"""
 
 
@@ -91,6 +100,12 @@ def parse_args() -> argparse.Namespace:
         "--id-key",
         default="id",
         help="Optional id field used for resume and output tracking.",
+    )
+    parser.add_argument(
+        "--weights-file",
+        type=Path,
+        default=DEFAULT_WEIGHTS_FILE,
+        help="JSON file containing the per-dimension weights for weighted_difficulty.",
     )
     parser.add_argument(
         "--batch-size",
@@ -558,6 +573,40 @@ def infer_tier(weighted_difficulty: float) -> str:
     return "very_hard"
 
 
+def load_weights(weights_file: Path) -> Dict[str, float]:
+    with weights_file.open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+
+    if not isinstance(payload, dict):
+        raise ValueError(f"Weights file must contain a JSON object: {weights_file}")
+
+    weights: Dict[str, float] = {}
+    for key in WEIGHTS:
+        if key not in payload:
+            raise ValueError(f"Missing weight key '{key}' in {weights_file}")
+        try:
+            weights[key] = float(payload[key])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Weight '{key}' must be numeric in {weights_file}") from exc
+
+    total_weight = sum(weights.values())
+    if not math.isclose(total_weight, 1.0, rel_tol=1e-6, abs_tol=1e-6):
+        raise ValueError(
+            f"Weights in {weights_file} must sum to 1.0, got {total_weight:.6f}"
+        )
+
+    return weights
+
+
+def compute_weighted_difficulty(scores: Dict[str, int]) -> float:
+    missing = [key for key in WEIGHTS if key not in scores]
+    if missing:
+        raise ValueError(f"Missing score keys for weighting: {', '.join(missing)}")
+
+    weighted_sum = sum(scores[key] * weight for key, weight in WEIGHTS.items())
+    return round(weighted_sum, 2)
+
+
 def parse_model_json(text: str) -> Dict[str, Any]:
     payload = json.loads(extract_json_candidate(text))
 
@@ -586,22 +635,8 @@ def parse_model_json(text: str) -> Dict[str, Any]:
             raise ValueError(f"Score {key} out of range: {value}")
         normalized_scores[key] = value
 
-    if "weighted_difficulty" not in payload:
-        raise ValueError("Missing 'weighted_difficulty' in model output.")
-    try:
-        weighted_difficulty = float(payload["weighted_difficulty"])
-    except (TypeError, ValueError) as exc:
-        raise ValueError("weighted_difficulty must be numeric.") from exc
-    if weighted_difficulty < 1.0 or weighted_difficulty > 5.0:
-        raise ValueError(f"weighted_difficulty out of range: {weighted_difficulty}")
-    weighted_difficulty = round(weighted_difficulty, 2)
-
-    tier = payload.get("difficulty_tier")
-    valid_tiers = {"easy", "medium", "hard", "very_hard"}
-    if tier is None:
-        tier = infer_tier(weighted_difficulty)
-    if tier not in valid_tiers:
-        raise ValueError(f"Invalid difficulty_tier: {tier}")
+    weighted_difficulty = compute_weighted_difficulty(normalized_scores)
+    tier = infer_tier(weighted_difficulty)
 
     return {
         "scores": normalized_scores,
@@ -620,6 +655,9 @@ def build_output_record(
     result["model_output"] = raw_output
     if score is not None:
         result["difficulty"] = score
+        result["weighted_difficulty"] = score["weighted_difficulty"]
+        result["difficulty_tier"] = score["difficulty_tier"]
+        result["scores"] = score["scores"]
     if error is not None:
         result["error"] = error
     return result
@@ -706,8 +744,10 @@ def build_retry_text(base_prompt_text: str) -> str:
 
 
 def main() -> None:
+    global WEIGHTS
     args = parse_args()
     setup_logging()
+    WEIGHTS = load_weights(args.weights_file)
 
     if args.input_2 is None and (
         args.image_root_2 is not None or args.range_2 is not None or args.pick_2 is not None
@@ -785,6 +825,7 @@ def main() -> None:
     else:
         logging.info("Sampling seed: %d", args.seed)
     logging.info("Model: %s", args.model)
+    logging.info("Weights file: %s", args.weights_file)
     logging.info(
         "Config: 4bit=%s batch_size=%d max_new_tokens=%d short_side=%d long_side=%d max_pixels=%d",
         not args.disable_4bit,

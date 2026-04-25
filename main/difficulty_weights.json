@@ -1,0 +1,8 @@
+{
+  "text_visibility": 0.25,
+  "ocr_ambiguity": 0.20,
+  "linguistic_complexity": 0.20,
+  "text_density": 0.15,
+  "reasoning_required": 0.12,
+  "text_orientation": 0.08
+}
