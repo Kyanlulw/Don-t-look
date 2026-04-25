@@ -3,6 +3,7 @@ import inspect
 import json
 import logging
 import math
+import random
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -59,6 +60,12 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="Input file (.jsonl with flat rows or ViTextVQA-style .json).",
     )
+    parser.add_argument(
+        "--input-2",
+        type=Path,
+        default=None,
+        help="Optional second dataset (.jsonl or ViTextVQA-style .json).",
+    )
     parser.add_argument("--output", type=Path, required=True, help="Output JSONL file.")
     parser.add_argument(
         "--model",
@@ -70,6 +77,12 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=None,
         help="Optional root directory prepended to relative image paths.",
+    )
+    parser.add_argument(
+        "--image-root-2",
+        type=Path,
+        default=None,
+        help="Optional image root for --input-2. Falls back to --image-root when omitted.",
     )
     parser.add_argument("--image-key", default="image", help="Image path field name.")
     parser.add_argument("--question-key", default="question", help="Question field name.")
@@ -136,6 +149,44 @@ def parse_args() -> argparse.Namespace:
         "--enable-thinking",
         action="store_true",
         help="Enable Qwen reasoning mode if supported by processor.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for dataset sampling/mixing and torch RNG.",
+    )
+    parser.add_argument(
+        "--source-tag-1",
+        default="dataset1",
+        help="Source tag for the first dataset in mixed runs.",
+    )
+    parser.add_argument(
+        "--source-tag-2",
+        default="dataset2",
+        help="Source tag for the second dataset in mixed runs.",
+    )
+    parser.add_argument(
+        "--range-1",
+        default=None,
+        help="Slice for first dataset as start:end (0-based, end exclusive).",
+    )
+    parser.add_argument(
+        "--range-2",
+        default=None,
+        help="Slice for second dataset as start:end (0-based, end exclusive).",
+    )
+    parser.add_argument(
+        "--pick-1",
+        type=int,
+        default=None,
+        help="Randomly pick N samples from the ranged first dataset.",
+    )
+    parser.add_argument(
+        "--pick-2",
+        type=int,
+        default=None,
+        help="Randomly pick N samples from the ranged second dataset.",
     )
     parser.add_argument("--limit", type=int, default=None, help="Optional cap for quick tests.")
     parser.add_argument(
@@ -214,7 +265,7 @@ def load_done_ids(output_path: Path, id_key: str) -> set:
                 row = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            sample_id = row.get(id_key)
+            sample_id = row.get("_resume_id", row.get(id_key))
             if sample_id is None or row.get("error"):
                 continue
             model_output = row.get("model_output")
@@ -305,6 +356,90 @@ def iter_input_samples(path: Path) -> Iterable[Dict[str, Any]]:
     raise ValueError(
         f"Unsupported input format for {path}. Use .jsonl or ViTextVQA-style .json"
     )
+
+
+def parse_slice_range(spec: Optional[str], total: int) -> Tuple[int, int]:
+    if spec is None:
+        return 0, total
+    if ":" not in spec:
+        raise ValueError(f"Invalid range '{spec}'. Expected format start:end")
+
+    start_raw, end_raw = spec.split(":", 1)
+    start = int(start_raw) if start_raw else 0
+    end = int(end_raw) if end_raw else total
+
+    if start < 0 or end < 0:
+        raise ValueError(f"Invalid range '{spec}'. Negative indexes are not supported.")
+
+    start = min(start, total)
+    end = min(end, total)
+    if start > end:
+        raise ValueError(f"Invalid range '{spec}'. Start must be <= end.")
+    return start, end
+
+
+def build_resume_id(
+    sample: Dict[str, Any],
+    id_key: str,
+    source_tag: str,
+    row_index: int,
+    use_source_prefix: bool,
+) -> str:
+    raw_id = sample.get(id_key)
+    base_id = str(raw_id) if raw_id is not None else f"idx-{row_index}"
+    if use_source_prefix:
+        return f"{source_tag}:{base_id}"
+    return base_id
+
+
+def prepare_dataset_samples(
+    path: Path,
+    image_root: Optional[Path],
+    range_spec: Optional[str],
+    pick_count: Optional[int],
+    source_tag: str,
+    use_source_prefix: bool,
+    done_ids: set,
+    id_key: str,
+    rng: random.Random,
+) -> List[Dict[str, Any]]:
+    all_rows = list(iter_input_samples(path))
+    start, end = parse_slice_range(range_spec, len(all_rows))
+    ranged_rows = all_rows[start:end]
+
+    prepared: List[Dict[str, Any]] = []
+    for offset, row in enumerate(ranged_rows):
+        original_index = start + offset
+        resume_id = build_resume_id(
+            sample=row,
+            id_key=id_key,
+            source_tag=source_tag,
+            row_index=original_index,
+            use_source_prefix=use_source_prefix,
+        )
+        if resume_id in done_ids:
+            continue
+
+        sample = dict(row)
+        sample["_source"] = source_tag
+        sample["_resume_id"] = resume_id
+        sample["__image_root"] = image_root
+        prepared.append(sample)
+
+    if pick_count is not None:
+        if pick_count < 0:
+            raise ValueError("pick count must be >= 0")
+        if pick_count < len(prepared):
+            prepared = rng.sample(prepared, pick_count)
+        elif pick_count > len(prepared):
+            logging.warning(
+                "Requested pick=%d from %s but only %d samples are available after filters.",
+                pick_count,
+                source_tag,
+                len(prepared),
+            )
+
+    return prepared
 
 
 def resolve_image_path(raw_path: str, image_root: Optional[Path]) -> Path:
@@ -479,7 +614,7 @@ def build_output_record(
     raw_output: str,
     error: Optional[str],
 ) -> Dict[str, Any]:
-    result = dict(sample)
+    result = {key: value for key, value in sample.items() if key != "__image_root"}
     result["model_output"] = raw_output
     if score is not None:
         result["difficulty"] = score
@@ -507,6 +642,9 @@ def run_batch_generation(
         generated_ids = model.generate(
             **model_inputs,
             do_sample=False,
+            temperature=1.0,
+            top_p=1.0,
+            top_k=50,
             use_cache=True,
             max_new_tokens=max_new_tokens,
             pad_token_id=pad_token_id,
@@ -569,8 +707,19 @@ def main() -> None:
     args = parse_args()
     setup_logging()
 
+    if args.input_2 is None and (
+        args.image_root_2 is not None or args.range_2 is not None or args.pick_2 is not None
+    ):
+        raise ValueError("--image-root-2/--range-2/--pick-2 require --input-2")
+
+    rng = random.Random(args.seed)
+    random.seed(args.seed)
+    torch.manual_seed(args.seed)
+
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for this script. A T4 is expected here.")
+
+    torch.cuda.manual_seed_all(args.seed)
 
     torch.set_grad_enabled(False)
     if hasattr(torch.backends.cuda, "matmul"):
@@ -578,14 +727,40 @@ def main() -> None:
     torch.backends.cudnn.benchmark = True
 
     done_ids = load_done_ids(args.output, args.id_key)
-    all_samples = []
-    for sample in iter_input_samples(args.input):
-        sample_id = sample.get(args.id_key)
-        if sample_id is not None and str(sample_id) in done_ids:
-            continue
-        all_samples.append(sample)
-        if args.limit is not None and len(all_samples) >= args.limit:
-            break
+    use_source_prefix = args.input_2 is not None
+
+    first_dataset_samples = prepare_dataset_samples(
+        path=args.input,
+        image_root=args.image_root,
+        range_spec=args.range_1,
+        pick_count=args.pick_1,
+        source_tag=args.source_tag_1,
+        use_source_prefix=use_source_prefix,
+        done_ids=done_ids,
+        id_key=args.id_key,
+        rng=rng,
+    )
+
+    second_dataset_samples: List[Dict[str, Any]] = []
+    if args.input_2 is not None:
+        second_dataset_samples = prepare_dataset_samples(
+            path=args.input_2,
+            image_root=args.image_root_2 if args.image_root_2 is not None else args.image_root,
+            range_spec=args.range_2,
+            pick_count=args.pick_2,
+            source_tag=args.source_tag_2,
+            use_source_prefix=True,
+            done_ids=done_ids,
+            id_key=args.id_key,
+            rng=rng,
+        )
+
+    all_samples = first_dataset_samples + second_dataset_samples
+    if args.input_2 is not None:
+        rng.shuffle(all_samples)
+
+    if args.limit is not None:
+        all_samples = all_samples[: args.limit]
 
     if not all_samples:
         logging.info("No pending samples found.")
@@ -596,6 +771,17 @@ def main() -> None:
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
     logging.info("Pending samples: %d", len(all_samples))
+    if args.input_2 is not None:
+        logging.info(
+            "Mix summary: %s=%d, %s=%d, seed=%d",
+            args.source_tag_1,
+            len(first_dataset_samples),
+            args.source_tag_2,
+            len(second_dataset_samples),
+            args.seed,
+        )
+    else:
+        logging.info("Sampling seed: %d", args.seed)
     logging.info("Model: %s", args.model)
     logging.info(
         "Config: 4bit=%s batch_size=%d max_new_tokens=%d short_side=%d long_side=%d max_pixels=%d",
@@ -625,7 +811,10 @@ def main() -> None:
                 pil_images = []
                 texts = []
                 for sample in batch:
-                    image_path = resolve_image_path(sample[args.image_key], args.image_root)
+                    sample_image_root = sample.get("__image_root")
+                    if sample_image_root is None:
+                        sample_image_root = args.image_root
+                    image_path = resolve_image_path(sample[args.image_key], sample_image_root)
                     pil_images.append(
                         load_image(
                             image_path,
