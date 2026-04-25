@@ -23,4 +23,4 @@ else
   shift "$#"
 fi
 
-python main/qwen3vl_vqa_difficulty.py --input "${INPUT_JSON}" --input-2 "${INPUT_JSON_2}" --output "${OUTPUT_JSON}" --image-root "${IMAGE_ROOT}" --image-root-2 "${IMAGE_ROOT_2}" --range-1 "${RANGE_1}" --range-2 "${RANGE_2}" --model "${MODEL}" --batch-size 4 --max-new-tokens 192 --short-side 768 --long-side 1280 --max-pixels 983040 --double-quant --seed "${SEED}" "$@"
+python main/qwen3vl_vqa_difficulty.py --input "${INPUT_JSON}" --input-2 "${INPUT_JSON_2}" --output "${OUTPUT_JSON}" --image-root "${IMAGE_ROOT}" --image-root-2 "${IMAGE_ROOT_2}" --range-1 "${RANGE_1}" --range-2 "${RANGE_2}" --model "${MODEL}" --batch-size 2 --max-new-tokens 192 --short-side 768 --long-side 1280 --max-pixels 983040 --double-quant --seed "${SEED}" "$@"
