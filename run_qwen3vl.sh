@@ -7,10 +7,10 @@
 #   ./run_qwen3vl.sh data.jsonl scored.jsonl . --batch-size 2
 
 INPUT_JSONL="${1:-/kaggle/input/datasets/trnlqung/vitext-vqa/ViTextVQA_train.json}"
-OUTPUT_JSONL="${2:-scored.jsonl}"
+OUTPUT_JSONL="${2:-scored.json}"
 IMAGE_ROOT="${3:-/kaggle/input/datasets/trnlqung/vitext-vqa/ViTextVQA_images/st_images}"
 MODEL="Qwen/Qwen3-VL-4B-Instruct"
-LIMIT_SAMPLES="100"
+LIMIT_SAMPLES="10"
 
 if [ "$#" -ge 3 ]; then
   shift 3
