@@ -96,8 +96,7 @@ def parse_args() -> argparse.Namespace:
         "--batch-size",
         type=int,
         default=1,
-        choices=[1, 2],
-        help="Small batches improve reliability on T4.",
+        help="Batch size. Use a positive integer; larger values may OOM.",
     )
     parser.add_argument(
         "--max-new-tokens",
@@ -201,7 +200,10 @@ def parse_args() -> argparse.Namespace:
         default=25,
         help="Print throughput every N samples.",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.batch_size < 1:
+        parser.error("--batch-size must be >= 1")
+    return args
 
 
 def setup_logging() -> None:

@@ -2,9 +2,9 @@
 # set -euo pipefail
 
 # Usage:
-#   ./run_qwen3vl.sh [input_jsonl] [output_jsonl] [image_root] [extra args...]
+#   ./run_qwen3vl.sh [input_1] [input_2] [output_jsonl] [image_root_1] [image_root_2] [extra args...]
 # Example:
-#   ./run_qwen3vl.sh data.jsonl scored.jsonl . --batch-size 2
+#   ./run_qwen3vl.sh data_a.json data_b.json scored.json . . --batch-size 2
 #   ./run_qwen3vl.sh data_a.jsonl scored.jsonl . --input-2 data_b.jsonl --range-1 0:1000 --range-2 200:1200 --pick-1 300 --pick-2 300 --seed 123
 
 INPUT_JSON="${1:-/kaggle/input/datasets/trnlqung/vitext-vqa/ViTextVQA_train.json}"
@@ -17,8 +17,8 @@ RANGE_1="0:3600"
 RANGE_2="0:1800"
 SEED="42"
 
-if [ "$#" -ge 3 ]; then
-  shift 3
+if [ "$#" -ge 5 ]; then
+  shift 5
 else
   shift "$#"
 fi
