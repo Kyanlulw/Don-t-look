@@ -13,8 +13,8 @@ OUTPUT_JSON="${3:-scored.json}"
 IMAGE_ROOT="${4:-/kaggle/input/datasets/trnlqung/vitext-vqa/ViTextVQA_images/st_images}"
 IMAGE_ROOT_2="${5:-/kaggle/input/datasets/trnlqung/openvivqa/images/images}"
 MODEL="Qwen/Qwen3-VL-8B-Instruct"
-RANGE_1="2201:4200"
-RANGE_2="1101:2100"
+RANGE_1="4201:6200"
+RANGE_2="2101:3100"
 SEED="42"
 
 if [ "$#" -ge 5 ]; then
