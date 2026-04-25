@@ -17,4 +17,4 @@ else
   shift "$#"
 fi
 
-python main/qwen3vl_vqa_difficulty.py --input "${INPUT_JSONL}" --output "${OUTPUT_JSONL}" --image-root "${IMAGE_ROOT}" --model "${MODEL}" --batch-size 1 --max-new-tokens 96 --short-side 768 --long-side 1280 --max-pixels 983040 --double-quant "$@"
+python main/qwen3vl_vqa_difficulty.py --input "${INPUT_JSONL}" --output "${OUTPUT_JSONL}" --image-root "${IMAGE_ROOT}" --model "${MODEL}" --batch-size 1 --max-new-tokens 192 --short-side 768 --long-side 1280 --max-pixels 983040 --double-quant "$@"

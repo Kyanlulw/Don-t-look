@@ -8,6 +8,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import torch
 from PIL import Image
+from tqdm.auto import tqdm
 from transformers import AutoProcessor, BitsAndBytesConfig, Qwen3VLForConditionalGeneration
 
 
@@ -92,7 +93,7 @@ def parse_args() -> argparse.Namespace:
         "--max-new-tokens",
         type=int,
         default=96,
-        help="Small because the target output is only JSON.",
+        help="Token budget for JSON output. Use >=192 to avoid truncation.",
     )
     parser.add_argument(
         "--short-side",
@@ -213,7 +214,7 @@ def load_done_ids(output_path: Path, id_key: str) -> set:
             except json.JSONDecodeError:
                 continue
             sample_id = row.get(id_key)
-            if sample_id is not None:
+            if sample_id is not None and not row.get("error"):
                 done.add(str(sample_id))
     return done
 
@@ -455,6 +456,37 @@ def run_batch_generation(
     )
 
 
+def prepare_model_inputs(
+    processor: Any,
+    texts: List[str],
+    images: List[Image.Image],
+    input_device: torch.device,
+) -> Dict[str, Any]:
+    model_inputs = processor(
+        text=texts,
+        images=images,
+        return_tensors="pt",
+        padding=True,
+    )
+    model_inputs.pop("token_type_ids", None)
+    return {
+        key: value.to(input_device) if hasattr(value, "to") else value
+        for key, value in model_inputs.items()
+    }
+
+
+def should_retry_json_parse(raw_output: str, error: Exception) -> bool:
+    message = str(error)
+    if "balanced JSON object" not in message and "Expecting" not in message:
+        return False
+
+    stripped = raw_output.strip()
+    if not stripped:
+        return True
+
+    return stripped.count("{") > stripped.count("}") or not stripped.endswith("}")
+
+
 def main() -> None:
     args = parse_args()
     setup_logging()
@@ -499,118 +531,147 @@ def main() -> None:
 
     started_at = time.time()
     written = 0
+    error_rows = 0
 
     with args.output.open("a", encoding="utf-8") as out_handle:
-        for batch_index, batch in enumerate(chunked(all_samples, args.batch_size), start=1):
-            pil_images = []
-            texts = []
-            for sample in batch:
-                image_path = resolve_image_path(sample[args.image_key], args.image_root)
-                pil_images.append(
-                    load_image(
-                        image_path,
-                        short_side_limit=args.short_side,
-                        long_side_limit=args.long_side,
-                        max_pixels=args.max_pixels,
+        with tqdm(total=len(all_samples), desc="Scoring", unit="sample") as progress:
+            for batch_index, batch in enumerate(chunked(all_samples, args.batch_size), start=1):
+                pil_images = []
+                texts = []
+                for sample in batch:
+                    image_path = resolve_image_path(sample[args.image_key], args.image_root)
+                    pil_images.append(
+                        load_image(
+                            image_path,
+                            short_side_limit=args.short_side,
+                            long_side_limit=args.long_side,
+                            max_pixels=args.max_pixels,
+                        )
                     )
-                )
-                messages = build_messages(
-                    question=str(sample[args.question_key]),
-                    answer=str(sample[args.answer_key]),
-                )
-                texts.append(
-                    processor.apply_chat_template(
-                        messages,
-                        tokenize=False,
-                        add_generation_prompt=True,
+                    messages = build_messages(
+                        question=str(sample[args.question_key]),
+                        answer=str(sample[args.answer_key]),
                     )
-                )
+                    texts.append(
+                        processor.apply_chat_template(
+                            messages,
+                            tokenize=False,
+                            add_generation_prompt=True,
+                        )
+                    )
 
-            model_inputs = processor(
-                text=texts,
-                images=pil_images,
-                return_tensors="pt",
-                padding=True,
-            )
-            model_inputs.pop("token_type_ids", None)
-            model_inputs = {
-                key: value.to(input_device) if hasattr(value, "to") else value
-                for key, value in model_inputs.items()
-            }
-
-            try:
-                outputs = run_batch_generation(
-                    model=model,
+                model_inputs = prepare_model_inputs(
                     processor=processor,
-                    model_inputs=model_inputs,
-                    max_new_tokens=args.max_new_tokens,
+                    texts=texts,
+                    images=pil_images,
+                    input_device=input_device,
                 )
-            except Exception as exc:
-                if len(batch) == 1 or not is_oom_error(exc):
-                    raise
 
-                logging.warning(
-                    "OOM on batch %d with size %d. Retrying samples one by one.",
-                    batch_index,
-                    len(batch),
-                )
-                torch.cuda.empty_cache()
-                outputs = []
-                for single_sample, single_image, single_text in zip(batch, pil_images, texts):
-                    single_inputs = processor(
-                        text=[single_text],
-                        images=[single_image],
-                        return_tensors="pt",
-                        padding=True,
-                    )
-                    single_inputs.pop("token_type_ids", None)
-                    single_inputs = {
-                        key: value.to(input_device) if hasattr(value, "to") else value
-                        for key, value in single_inputs.items()
-                    }
-                    try:
-                        single_output = run_batch_generation(
-                            model=model,
-                            processor=processor,
-                            model_inputs=single_inputs,
-                            max_new_tokens=args.max_new_tokens,
-                        )[0]
-                    except Exception as single_exc:
-                        if is_oom_error(single_exc):
-                            torch.cuda.empty_cache()
-                            single_output = json.dumps(
-                                {"error": "cuda_oom_during_generation"},
-                                ensure_ascii=False,
-                            )
-                        else:
-                            raise
-                    outputs.append(single_output)
-
-            for sample, raw_output in zip(batch, outputs):
-                error = None
-                parsed = None
                 try:
-                    parsed = parse_model_json(raw_output)
+                    outputs = run_batch_generation(
+                        model=model,
+                        processor=processor,
+                        model_inputs=model_inputs,
+                        max_new_tokens=args.max_new_tokens,
+                    )
                 except Exception as exc:
-                    error = str(exc)
-                record = build_output_record(sample, parsed, raw_output, error)
-                out_handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-                written += 1
+                    if len(batch) == 1 or not is_oom_error(exc):
+                        raise
 
-            if written % args.flush_every == 0:
-                out_handle.flush()
+                    logging.warning(
+                        "OOM on batch %d with size %d. Retrying samples one by one.",
+                        batch_index,
+                        len(batch),
+                    )
+                    torch.cuda.empty_cache()
+                    outputs = []
+                    for single_sample, single_image, single_text in zip(batch, pil_images, texts):
+                        single_inputs = prepare_model_inputs(
+                            processor=processor,
+                            texts=[single_text],
+                            images=[single_image],
+                            input_device=input_device,
+                        )
+                        try:
+                            single_output = run_batch_generation(
+                                model=model,
+                                processor=processor,
+                                model_inputs=single_inputs,
+                                max_new_tokens=args.max_new_tokens,
+                            )[0]
+                        except Exception as single_exc:
+                            if is_oom_error(single_exc):
+                                torch.cuda.empty_cache()
+                                single_output = json.dumps(
+                                    {"error": "cuda_oom_during_generation"},
+                                    ensure_ascii=False,
+                                )
+                            else:
+                                raise
+                        outputs.append(single_output)
 
-            if written % args.log_every == 0:
-                elapsed = max(time.time() - started_at, 1e-6)
-                logging.info(
-                    "Processed %d/%d samples | %.2f samples/s",
-                    written,
-                    len(all_samples),
-                    written / elapsed,
-                )
+                for sample, raw_output, sample_image, sample_text in zip(
+                    batch,
+                    outputs,
+                    pil_images,
+                    texts,
+                ):
+                    error = None
+                    parsed = None
+                    try:
+                        parsed = parse_model_json(raw_output)
+                    except Exception as exc:
+                        error = str(exc)
+                        if should_retry_json_parse(raw_output, exc):
+                            retry_tokens = max(args.max_new_tokens * 2, 192)
+                            logging.warning(
+                                "Retrying truncated/invalid JSON for sample id=%s with max_new_tokens=%d",
+                                sample.get(args.id_key),
+                                retry_tokens,
+                            )
+                            try:
+                                retry_inputs = prepare_model_inputs(
+                                    processor=processor,
+                                    texts=[sample_text],
+                                    images=[sample_image],
+                                    input_device=input_device,
+                                )
+                                retry_output = run_batch_generation(
+                                    model=model,
+                                    processor=processor,
+                                    model_inputs=retry_inputs,
+                                    max_new_tokens=retry_tokens,
+                                )[0]
+                                parsed = parse_model_json(retry_output)
+                                raw_output = retry_output
+                                error = None
+                            except Exception as retry_exc:
+                                error = f"{error} | retry_failed: {retry_exc}"
 
-            for image in pil_images:
-                image.close()
+                    if error is not None:
+                        error_rows += 1
+
+                    record = build_output_record(sample, parsed, raw_output, error)
+                    out_handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+                    written += 1
+                    progress.update(1)
+
+                if written % args.flush_every == 0:
+                    out_handle.flush()
+
+                if written % args.log_every == 0:
+                    elapsed = max(time.time() - started_at, 1e-6)
+                    speed = written / elapsed
+                    progress.set_postfix(errors=error_rows, samples_per_sec=f"{speed:.2f}")
+                    logging.info(
+                        "Processed %d/%d samples | %.2f samples/s",
+                        written,
+                        len(all_samples),
+                        speed,
+                    )
+
+                for image in pil_images:
+                    image.close()
 
     elapsed = max(time.time() - started_at, 1e-6)
     logging.info(
