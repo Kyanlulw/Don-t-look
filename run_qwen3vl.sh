@@ -7,7 +7,7 @@
 #   ./run_qwen3vl.sh data.jsonl scored.jsonl . --batch-size 2
 
 INPUT_JSONL="${1:-/kaggle/input/datasets/trnlqung/vitext-vqa/ViTextVQA_train.json}"
-OUTPUT_JSONL="${2:-scored.json}"
+OUTPUT_JSONL="${2:-scored.jsonl}"
 IMAGE_ROOT="${3:-/kaggle/input/datasets/trnlqung/vitext-vqa/ViTextVQA_images/st_images}"
 MODEL="Qwen/Qwen3-VL-4B-Instruct"
 LIMIT_SAMPLES="100"
@@ -18,4 +18,4 @@ else
   shift "$#"
 fi
 
-python main/qwen3vl_vqa_difficulty.py --input "${INPUT_JSONL}" --output "${OUTPUT_JSONL}" --image-root "${IMAGE_ROOT}" --model "${MODEL}" --batch-size 4 --max-new-tokens 48 --short-side 336 --long-side 448 --max-pixels 150528 --double-quant --limit "${LIMIT_SAMPLES}" "$@"
+python main/qwen3vl_vqa_difficulty.py --input "${INPUT_JSONL}" --output "${OUTPUT_JSONL}" --image-root "${IMAGE_ROOT}" --model "${MODEL}" --batch-size 1 --max-new-tokens 192 --short-side 768 --long-side 1280 --max-pixels 983040 --double-quant --limit "${LIMIT_SAMPLES}" "$@"
