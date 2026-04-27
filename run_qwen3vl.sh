@@ -12,7 +12,7 @@ INPUT_JSON_2="${2:-/kaggle/input/datasets/trnlqung/openvivqa/openvivqa_train_v2.
 OUTPUT_JSON="${3:-scored.json}"
 IMAGE_ROOT="${4:-/kaggle/input/datasets/trnlqung/vitext-vqa/ViTextVQA_images/st_images}"
 IMAGE_ROOT_2="${5:-/kaggle/input/datasets/trnlqung/openvivqa/images/images}"
-MODEL=""5CD-AI/Vintern-1B-v3_5""
+MODEL="5CD-AI/Vintern-1B-v3_5"
 RANGE_1="2201:4200"
 RANGE_2="1101:2100"
 SEED="42"
@@ -23,4 +23,4 @@ else
   shift "$#"
 fi
 
-python main/qwen3vl_vqa_difficulty.py --input "${INPUT_JSON}" --input-2 "${INPUT_JSON_2}" --output "${OUTPUT_JSON}" --image-root "${IMAGE_ROOT}" --image-root-2 "${IMAGE_ROOT_2}" --range-1 "${RANGE_1}" --range-2 "${RANGE_2}" --model "${MODEL}" --batch-size 2 --max-new-tokens 192 --short-side 768 --long-side 1280 --max-pixels 983040 --double-quant --seed "${SEED}" "$@"
+python main/qwen3vl_vqa_difficulty.py --input "${INPUT_JSON}" --input-2 "${INPUT_JSON_2}" --output "${OUTPUT_JSON}" --image-root "${IMAGE_ROOT}" --image-root-2 "${IMAGE_ROOT_2}" --range-1 "${RANGE_1}" --range-2 "${RANGE_2}" --model "${MODEL}" --model-backend vintern --prompt-style vintern --batch-size 2 --max-new-tokens 192 --short-side 768 --long-side 1280 --max-pixels 983040 --seed "${SEED}" "$@"
