@@ -251,6 +251,11 @@ def parse_args() -> argparse.Namespace:
         default=25,
         help="Print throughput every N samples.",
     )
+    parser.add_argument(
+        "--disable-resume",
+        action="store_true",
+        help="Ignore existing output rows and rescore all samples in the selected ranges.",
+    )
     args = parser.parse_args()
     if args.batch_size < 1:
         parser.error("--batch-size must be >= 1")
@@ -309,7 +314,7 @@ def load_model_and_processor(
         try:
             model = AutoModel.from_pretrained(
                 args.model,
-                dtype=torch_dtype,
+                torch_dtype=torch_dtype,
                 low_cpu_mem_usage=True,
                 trust_remote_code=True,
                 use_flash_attn=False,
@@ -322,7 +327,7 @@ def load_model_and_processor(
             try:
                 model = AutoModel.from_pretrained(
                     args.model,
-                    dtype=torch_dtype,
+                    torch_dtype=torch_dtype,
                     low_cpu_mem_usage=True,
                     trust_remote_code=True,
                 )
@@ -334,7 +339,7 @@ def load_model_and_processor(
                 )
                 model = AutoModel.from_pretrained(
                     args.model,
-                    dtype=torch_dtype,
+                    torch_dtype=torch_dtype,
                     low_cpu_mem_usage=False,
                     trust_remote_code=True,
                 )
@@ -557,6 +562,26 @@ def prepare_dataset_samples(
                 source_tag,
                 len(prepared),
             )
+
+    skipped_done = len(ranged_rows) - len(prepared)
+    logging.info(
+        "%s selection | total=%d range=%s -> %d:%d (%d rows) | pending=%d skipped_done=%d",
+        source_tag,
+        len(all_rows),
+        range_spec if range_spec is not None else "full",
+        start,
+        end,
+        len(ranged_rows),
+        len(prepared),
+        skipped_done,
+    )
+    if prepared:
+        logging.info(
+            "%s resume-id preview | first=%s last=%s",
+            source_tag,
+            prepared[0]["_resume_id"],
+            prepared[-1]["_resume_id"],
+        )
 
     return prepared
 
@@ -1031,7 +1056,9 @@ def main() -> None:
         torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.benchmark = True
 
-    done_ids = load_done_ids(args.output, args.id_key)
+    done_ids = set() if args.disable_resume else load_done_ids(args.output, args.id_key)
+    if args.disable_resume:
+        logging.info("Resume disabled: existing output file will be ignored for sample skipping.")
     use_source_prefix = args.input_2 is not None
 
     first_dataset_samples = prepare_dataset_samples(
