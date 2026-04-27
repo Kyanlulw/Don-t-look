@@ -291,7 +291,8 @@ def load_model_and_processor(
         model = AutoModel.from_pretrained(
             args.model,
             torch_dtype=torch_dtype,
-            low_cpu_mem_usage=True,
+            # Vintern's custom model __init__ uses Tensor.item(); meta init breaks it.
+            low_cpu_mem_usage=False,
             trust_remote_code=True,
             use_flash_attn=False,
         )
