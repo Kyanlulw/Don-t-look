@@ -1,4 +1,5 @@
 import argparse
+import importlib.metadata
 import inspect
 import json
 import logging
@@ -16,8 +17,25 @@ from transformers import (
     AutoProcessor,
     AutoTokenizer,
     BitsAndBytesConfig,
-    Qwen3VLForConditionalGeneration,
 )
+
+
+def get_transformers_major_version() -> int:
+    try:
+        version_text = importlib.metadata.version("transformers")
+    except importlib.metadata.PackageNotFoundError:
+        return 0
+
+    major = version_text.split(".", 1)[0]
+    major_digits = "".join(char for char in major if char.isdigit())
+    return int(major_digits) if major_digits else 0
+
+
+TRANSFORMERS_MAJOR_VERSION = get_transformers_major_version()
+if TRANSFORMERS_MAJOR_VERSION > 5:
+    from transformers import Qwen3VLForConditionalGeneration
+else:
+    Qwen3VLForConditionalGeneration = None
 
 
 SYSTEM_PROMPT = (
@@ -328,6 +346,13 @@ def load_model_and_processor(
             use_fast=False,
         )
         return model, tokenizer
+
+    if Qwen3VLForConditionalGeneration is None:
+        raise RuntimeError(
+            "Qwen backend requires transformers major version > 5 for "
+            "Qwen3VLForConditionalGeneration import. "
+            "Use --model-backend vintern or upgrade transformers."
+        )
 
     model = Qwen3VLForConditionalGeneration.from_pretrained(
         args.model,
