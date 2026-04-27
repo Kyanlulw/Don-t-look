@@ -1,5 +1,5 @@
 torch>=2.1
-transformers>=4.51
+transformers==4.56.2
 accelerate>=0.30
 tqdm>=4.66
 Pillow>=10.0
