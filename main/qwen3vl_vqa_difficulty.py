@@ -288,16 +288,16 @@ def load_model_and_processor(
         if quantization_config is not None:
             logging.warning("4-bit quantization is ignored for Vintern backend.")
 
-        # Some environments may leak a default meta device context; force CPU init.
-        with torch.device("cpu"):
-            model = AutoModel.from_pretrained(
-                args.model,
-                torch_dtype=torch_dtype,
-                # Vintern's custom model __init__ uses Tensor.item(); meta init breaks it.
-                low_cpu_mem_usage=False,
-                trust_remote_code=True,
-                use_flash_attn=False,
-            )
+        # DO NOT use `with torch.device("cpu")` — it can still trigger meta init
+        # in newer transformers. Just pass low_cpu_mem_usage=False with no device_map.
+        model = AutoModel.from_pretrained(
+            args.model,
+            torch_dtype=torch_dtype,
+            low_cpu_mem_usage=False,   # <-- this is the key flag
+            trust_remote_code=True,
+            use_flash_attn=False,
+            # no device_map at all
+        )
         model = model.eval().cuda()
         tokenizer = AutoTokenizer.from_pretrained(
             args.model,
@@ -707,37 +707,9 @@ def chunked(items: List[Dict[str, Any]], size: int) -> Iterable[List[Dict[str, A
 
 
 def infer_input_device(model: Any) -> torch.device:
-    # Prefer Accelerate device map when present (e.g. device_map="auto").
-    device_map = getattr(model, "hf_device_map", None)
-    if isinstance(device_map, dict):
-        for target in device_map.values():
-            if isinstance(target, torch.device) and target.type != "meta":
-                return target
-            if isinstance(target, int):
-                return torch.device(f"cuda:{target}")
-            if isinstance(target, str):
-                lowered = target.lower()
-                if lowered.startswith("cuda"):
-                    return torch.device(target)
-
-    model_device = getattr(model, "device", None)
-    if isinstance(model_device, torch.device) and model_device.type != "meta":
-        return model_device
-    if isinstance(model_device, str) and model_device != "meta":
-        return torch.device(model_device)
-
-    # Some models keep meta placeholders; find the first concrete parameter device.
-    try:
-        for parameter in model.parameters():
-            if parameter.device.type != "meta":
-                return parameter.device
-    except Exception:
-        pass
-
-    # Last-resort default.
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    return torch.device("cpu")
+    if hasattr(model, "device") and str(model.device) != "meta":
+        return model.device
+    return next(model.parameters()).device
 
 
 def extract_json_candidate(text: str) -> str:
