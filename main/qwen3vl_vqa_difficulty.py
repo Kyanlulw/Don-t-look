@@ -165,6 +165,12 @@ def parse_args() -> argparse.Namespace:
         help="Enable Qwen reasoning mode if supported by processor.",
     )
     parser.add_argument(
+        "--prompt-style",
+        choices=["qwen", "vintern"],
+        default="qwen",
+        help="Prompt scaffolding style. Use 'vintern' for InternVL-style '<image>\\n...' single-turn text prompts.",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=42,
@@ -505,7 +511,7 @@ def load_image(
         return maybe_resize_image(image, short_side_limit, long_side_limit, max_pixels)
 
 
-def build_messages(question: str, answer: str) -> List[Dict[str, Any]]:
+def build_qwen_messages(question: str, answer: str) -> List[Dict[str, Any]]:
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
         {
@@ -516,6 +522,30 @@ def build_messages(question: str, answer: str) -> List[Dict[str, Any]]:
             ],
         },
     ]
+
+
+def build_vintern_question(question: str, answer: str) -> str:
+    # Vintern (InternVL-style chat API) expects a single question string prefixed by <image>.
+    return f"<image>\n{build_scoring_prompt(question, answer)}"
+
+
+def build_prompt_text(
+    processor: Any,
+    question: str,
+    answer: str,
+    prompt_style: str,
+    thinking_kwargs: Dict[str, Any],
+) -> str:
+    if prompt_style == "vintern":
+        return build_vintern_question(question, answer)
+
+    messages = build_qwen_messages(question, answer)
+    return processor.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
+        **thinking_kwargs,
+    )
 
 
 def chunked(items: List[Dict[str, Any]], size: int) -> Iterable[List[Dict[str, Any]]]:
@@ -866,16 +896,13 @@ def main() -> None:
                             max_pixels=args.max_pixels,
                         )
                     )
-                    messages = build_messages(
-                        question=str(sample[args.question_key]),
-                        answer=str(sample[args.answer_key]),
-                    )
                     texts.append(
-                        processor.apply_chat_template(
-                            messages,
-                            tokenize=False,
-                            add_generation_prompt=True,
-                            **thinking_kwargs,
+                        build_prompt_text(
+                            processor=processor,
+                            question=str(sample[args.question_key]),
+                            answer=str(sample[args.answer_key]),
+                            prompt_style=args.prompt_style,
+                            thinking_kwargs=thinking_kwargs,
                         )
                     )
 
