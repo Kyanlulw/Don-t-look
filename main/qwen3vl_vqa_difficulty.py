@@ -288,14 +288,16 @@ def load_model_and_processor(
         if quantization_config is not None:
             logging.warning("4-bit quantization is ignored for Vintern backend.")
 
-        model = AutoModel.from_pretrained(
-            args.model,
-            torch_dtype=torch_dtype,
-            # Vintern's custom model __init__ uses Tensor.item(); meta init breaks it.
-            low_cpu_mem_usage=False,
-            trust_remote_code=True,
-            use_flash_attn=False,
-        )
+        # Some environments may leak a default meta device context; force CPU init.
+        with torch.device("cpu"):
+            model = AutoModel.from_pretrained(
+                args.model,
+                torch_dtype=torch_dtype,
+                # Vintern's custom model __init__ uses Tensor.item(); meta init breaks it.
+                low_cpu_mem_usage=False,
+                trust_remote_code=True,
+                use_flash_attn=False,
+            )
         model = model.eval().cuda()
         tokenizer = AutoTokenizer.from_pretrained(
             args.model,
