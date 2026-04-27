@@ -11,7 +11,13 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import torch
 from PIL import Image
 from tqdm.auto import tqdm
-from transformers import AutoProcessor, BitsAndBytesConfig, Qwen3VLForConditionalGeneration
+from transformers import (
+    AutoModel,
+    AutoProcessor,
+    AutoTokenizer,
+    BitsAndBytesConfig,
+    Qwen3VLForConditionalGeneration,
+)
 
 
 SYSTEM_PROMPT = (
@@ -171,6 +177,12 @@ def parse_args() -> argparse.Namespace:
         help="Prompt scaffolding style. Use 'vintern' for InternVL-style '<image>\\n...' single-turn text prompts.",
     )
     parser.add_argument(
+        "--model-backend",
+        choices=["auto", "qwen", "vintern"],
+        default="auto",
+        help="Model loading backend. 'auto' infers from prompt style and model id.",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=42,
@@ -253,11 +265,44 @@ def build_quant_config(args: argparse.Namespace) -> Optional[BitsAndBytesConfig]
     )
 
 
+def resolve_model_backend(args: argparse.Namespace) -> str:
+    if args.model_backend != "auto":
+        return args.model_backend
+    if args.prompt_style == "vintern":
+        return "vintern"
+
+    model_name = args.model.lower()
+    if "vintern" in model_name or "internvl" in model_name:
+        return "vintern"
+    return "qwen"
+
+
 def load_model_and_processor(
     args: argparse.Namespace,
-) -> Tuple[Qwen3VLForConditionalGeneration, Any]:
+) -> Tuple[Any, Any]:
+    backend = resolve_model_backend(args)
     quantization_config = build_quant_config(args)
     torch_dtype = resolve_dtype(args.dtype)
+
+    if backend == "vintern":
+        if quantization_config is not None:
+            logging.warning("4-bit quantization is ignored for Vintern backend.")
+
+        model = AutoModel.from_pretrained(
+            args.model,
+            torch_dtype=torch_dtype,
+            low_cpu_mem_usage=True,
+            trust_remote_code=True,
+            use_flash_attn=False,
+        )
+        model = model.eval().cuda()
+        tokenizer = AutoTokenizer.from_pretrained(
+            args.model,
+            trust_remote_code=True,
+            use_fast=False,
+        )
+        return model, tokenizer
+
     model = Qwen3VLForConditionalGeneration.from_pretrained(
         args.model,
         quantization_config=quantization_config,
@@ -511,6 +556,108 @@ def load_image(
         return maybe_resize_image(image, short_side_limit, long_side_limit, max_pixels)
 
 
+def find_closest_aspect_ratio(
+    aspect_ratio: float,
+    target_ratios: List[Tuple[int, int]],
+    width: int,
+    height: int,
+    image_size: int,
+) -> Tuple[int, int]:
+    best_ratio_diff = float("inf")
+    best_ratio = (1, 1)
+    area = width * height
+
+    for ratio_w, ratio_h in target_ratios:
+        target_aspect_ratio = ratio_w / ratio_h
+        ratio_diff = abs(aspect_ratio - target_aspect_ratio)
+        if ratio_diff < best_ratio_diff:
+            best_ratio_diff = ratio_diff
+            best_ratio = (ratio_w, ratio_h)
+        elif ratio_diff == best_ratio_diff:
+            if area > 0.5 * image_size * image_size * ratio_w * ratio_h:
+                best_ratio = (ratio_w, ratio_h)
+    return best_ratio
+
+
+def dynamic_preprocess(
+    image: Image.Image,
+    min_num: int = 1,
+    max_num: int = 12,
+    image_size: int = 448,
+    use_thumbnail: bool = False,
+) -> List[Image.Image]:
+    orig_width, orig_height = image.size
+    aspect_ratio = orig_width / orig_height
+
+    target_ratios = set(
+        (i, j)
+        for n in range(min_num, max_num + 1)
+        for i in range(1, n + 1)
+        for j in range(1, n + 1)
+        if min_num <= i * j <= max_num
+    )
+    sorted_ratios = sorted(target_ratios, key=lambda ratio: ratio[0] * ratio[1])
+
+    ratio_w, ratio_h = find_closest_aspect_ratio(
+        aspect_ratio=aspect_ratio,
+        target_ratios=sorted_ratios,
+        width=orig_width,
+        height=orig_height,
+        image_size=image_size,
+    )
+
+    target_width = image_size * ratio_w
+    target_height = image_size * ratio_h
+    blocks = ratio_w * ratio_h
+    resized_img = image.resize((target_width, target_height), Image.Resampling.BICUBIC)
+
+    processed_images: List[Image.Image] = []
+    columns = target_width // image_size
+    for index in range(blocks):
+        box = (
+            (index % columns) * image_size,
+            (index // columns) * image_size,
+            ((index % columns) + 1) * image_size,
+            ((index // columns) + 1) * image_size,
+        )
+        processed_images.append(resized_img.crop(box))
+
+    if use_thumbnail and len(processed_images) != 1:
+        processed_images.append(image.resize((image_size, image_size), Image.Resampling.BICUBIC))
+
+    return processed_images
+
+
+def pil_to_normalized_tensor(image: Image.Image) -> torch.Tensor:
+    tensor = torch.ByteTensor(torch.ByteStorage.from_buffer(image.tobytes()))
+    tensor = tensor.view(image.height, image.width, 3).permute(2, 0, 1).float().div_(255.0)
+
+    mean = torch.tensor([0.485, 0.456, 0.406], dtype=torch.float32).view(3, 1, 1)
+    std = torch.tensor([0.229, 0.224, 0.225], dtype=torch.float32).view(3, 1, 1)
+    return (tensor - mean) / std
+
+
+def load_vintern_pixel_values(
+    path: Path,
+    target_dtype: torch.dtype,
+    device: torch.device,
+    input_size: int = 448,
+    max_num: int = 6,
+) -> torch.Tensor:
+    with Image.open(path) as image:
+        image = image.convert("RGB")
+        tiles = dynamic_preprocess(
+            image=image,
+            image_size=input_size,
+            max_num=max_num,
+            use_thumbnail=True,
+        )
+
+    tile_tensors = [pil_to_normalized_tensor(tile) for tile in tiles]
+    pixel_values = torch.stack(tile_tensors)
+    return pixel_values.to(dtype=target_dtype, device=device)
+
+
 def build_qwen_messages(question: str, answer: str) -> List[Dict[str, Any]]:
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -530,7 +677,7 @@ def build_vintern_question(question: str, answer: str) -> str:
 
 
 def build_prompt_text(
-    processor: Any,
+    processor: Optional[Any],
     question: str,
     answer: str,
     prompt_style: str,
@@ -538,6 +685,9 @@ def build_prompt_text(
 ) -> str:
     if prompt_style == "vintern":
         return build_vintern_question(question, answer)
+
+    if processor is None:
+        raise ValueError("Qwen prompt style requires a processor.")
 
     messages = build_qwen_messages(question, answer)
     return processor.apply_chat_template(
@@ -553,7 +703,7 @@ def chunked(items: List[Dict[str, Any]], size: int) -> Iterable[List[Dict[str, A
         yield items[index : index + size]
 
 
-def infer_input_device(model: Qwen3VLForConditionalGeneration) -> torch.device:
+def infer_input_device(model: Any) -> torch.device:
     if hasattr(model, "device") and str(model.device) != "meta":
         return model.device
     return next(model.parameters()).device
@@ -699,7 +849,7 @@ def is_oom_error(exc: Exception) -> bool:
 
 
 def run_batch_generation(
-    model: Qwen3VLForConditionalGeneration,
+    model: Any,
     processor: Any,
     model_inputs: Dict[str, Any],
     max_new_tokens: int,
@@ -727,6 +877,38 @@ def run_batch_generation(
         skip_special_tokens=True,
         clean_up_tokenization_spaces=False,
     )
+
+
+def run_vintern_batch_generation(
+    model: Any,
+    tokenizer: Any,
+    pixel_values_batch: List[torch.Tensor],
+    prompts: List[str],
+    max_new_tokens: int,
+) -> List[str]:
+    outputs: List[str] = []
+    generation_config = {
+        "max_new_tokens": max_new_tokens,
+        "do_sample": False,
+        "num_beams": 3,
+        "repetition_penalty": 2.5,
+    }
+
+    with torch.inference_mode():
+        for pixel_values, prompt in zip(pixel_values_batch, prompts):
+            response = model.chat(
+                tokenizer,
+                pixel_values,
+                prompt,
+                generation_config,
+                history=None,
+                return_history=False,
+            )
+            if isinstance(response, tuple):
+                outputs.append(str(response[0]))
+            else:
+                outputs.append(str(response))
+    return outputs
 
 
 def prepare_model_inputs(
@@ -838,8 +1020,9 @@ def main() -> None:
         logging.info("No pending samples found.")
         return
 
+    backend = resolve_model_backend(args)
     model, processor = load_model_and_processor(args)
-    input_device = infer_input_device(model)
+    input_device = infer_input_device(model) if backend == "qwen" else torch.device("cuda")
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
     logging.info("Pending samples: %d", len(all_samples))
@@ -855,6 +1038,7 @@ def main() -> None:
     else:
         logging.info("Sampling seed: %d", args.seed)
     logging.info("Model: %s", args.model)
+    logging.info("Backend: %s", backend)
     logging.info("Weights file: %s", args.weights_file)
     logging.info(
         "Config: 4bit=%s batch_size=%d max_new_tokens=%d short_side=%d long_side=%d max_pixels=%d",
@@ -867,12 +1051,13 @@ def main() -> None:
     )
 
     thinking_kwargs: Dict[str, Any] = {}
-    try:
-        sig = inspect.signature(processor.apply_chat_template)
-        if "enable_thinking" in sig.parameters:
-            thinking_kwargs["enable_thinking"] = args.enable_thinking
-    except Exception:
-        pass
+    if backend == "qwen":
+        try:
+            sig = inspect.signature(processor.apply_chat_template)
+            if "enable_thinking" in sig.parameters:
+                thinking_kwargs["enable_thinking"] = args.enable_thinking
+        except Exception:
+            pass
 
     started_at = time.time()
     written = 0
@@ -881,85 +1066,134 @@ def main() -> None:
     with args.output.open("a", encoding="utf-8") as out_handle:
         with tqdm(total=len(all_samples), desc="Scoring", unit="sample") as progress:
             for batch_index, batch in enumerate(chunked(all_samples, args.batch_size), start=1):
-                pil_images = []
+                image_payloads: List[Any] = []
                 texts = []
                 for sample in batch:
                     sample_image_root = sample.get("__image_root")
                     if sample_image_root is None:
                         sample_image_root = args.image_root
                     image_path = resolve_image_path(sample[args.image_key], sample_image_root)
-                    pil_images.append(
-                        load_image(
-                            image_path,
-                            short_side_limit=args.short_side,
-                            long_side_limit=args.long_side,
-                            max_pixels=args.max_pixels,
+                    if backend == "qwen":
+                        image_payloads.append(
+                            load_image(
+                                image_path,
+                                short_side_limit=args.short_side,
+                                long_side_limit=args.long_side,
+                                max_pixels=args.max_pixels,
+                            )
                         )
-                    )
+                    else:
+                        image_payloads.append(
+                            load_vintern_pixel_values(
+                                path=image_path,
+                                target_dtype=resolve_dtype(args.dtype),
+                                device=input_device,
+                            )
+                        )
                     texts.append(
                         build_prompt_text(
-                            processor=processor,
+                            processor=processor if backend == "qwen" else None,
                             question=str(sample[args.question_key]),
                             answer=str(sample[args.answer_key]),
-                            prompt_style=args.prompt_style,
+                            prompt_style=args.prompt_style if backend == "qwen" else "vintern",
                             thinking_kwargs=thinking_kwargs,
                         )
                     )
 
-                model_inputs = prepare_model_inputs(
-                    processor=processor,
-                    texts=texts,
-                    images=pil_images,
-                    input_device=input_device,
-                )
-
-                try:
-                    outputs = run_batch_generation(
-                        model=model,
+                if backend == "qwen":
+                    model_inputs = prepare_model_inputs(
                         processor=processor,
-                        model_inputs=model_inputs,
-                        max_new_tokens=args.max_new_tokens,
+                        texts=texts,
+                        images=image_payloads,
+                        input_device=input_device,
                     )
-                except Exception as exc:
-                    if len(batch) == 1 or not is_oom_error(exc):
-                        raise
 
-                    logging.warning(
-                        "OOM on batch %d with size %d. Retrying samples one by one.",
-                        batch_index,
-                        len(batch),
-                    )
-                    torch.cuda.empty_cache()
-                    outputs = []
-                    for single_sample, single_image, single_text in zip(batch, pil_images, texts):
-                        single_inputs = prepare_model_inputs(
+                    try:
+                        outputs = run_batch_generation(
+                            model=model,
                             processor=processor,
-                            texts=[single_text],
-                            images=[single_image],
-                            input_device=input_device,
+                            model_inputs=model_inputs,
+                            max_new_tokens=args.max_new_tokens,
                         )
-                        try:
-                            single_output = run_batch_generation(
-                                model=model,
-                                processor=processor,
-                                model_inputs=single_inputs,
-                                max_new_tokens=args.max_new_tokens,
-                            )[0]
-                        except Exception as single_exc:
-                            if is_oom_error(single_exc):
-                                torch.cuda.empty_cache()
-                                single_output = json.dumps(
-                                    {"error": "cuda_oom_during_generation"},
-                                    ensure_ascii=False,
-                                )
-                            else:
-                                raise
-                        outputs.append(single_output)
+                    except Exception as exc:
+                        if len(batch) == 1 or not is_oom_error(exc):
+                            raise
 
-                for sample, raw_output, sample_image, sample_text in zip(
+                        logging.warning(
+                            "OOM on batch %d with size %d. Retrying samples one by one.",
+                            batch_index,
+                            len(batch),
+                        )
+                        torch.cuda.empty_cache()
+                        outputs = []
+                        for single_image, single_text in zip(image_payloads, texts):
+                            single_inputs = prepare_model_inputs(
+                                processor=processor,
+                                texts=[single_text],
+                                images=[single_image],
+                                input_device=input_device,
+                            )
+                            try:
+                                single_output = run_batch_generation(
+                                    model=model,
+                                    processor=processor,
+                                    model_inputs=single_inputs,
+                                    max_new_tokens=args.max_new_tokens,
+                                )[0]
+                            except Exception as single_exc:
+                                if is_oom_error(single_exc):
+                                    torch.cuda.empty_cache()
+                                    single_output = json.dumps(
+                                        {"error": "cuda_oom_during_generation"},
+                                        ensure_ascii=False,
+                                    )
+                                else:
+                                    raise
+                            outputs.append(single_output)
+                else:
+                    try:
+                        outputs = run_vintern_batch_generation(
+                            model=model,
+                            tokenizer=processor,
+                            pixel_values_batch=image_payloads,
+                            prompts=texts,
+                            max_new_tokens=args.max_new_tokens,
+                        )
+                    except Exception as exc:
+                        if len(batch) == 1 or not is_oom_error(exc):
+                            raise
+
+                        logging.warning(
+                            "OOM on batch %d with size %d. Retrying samples one by one.",
+                            batch_index,
+                            len(batch),
+                        )
+                        torch.cuda.empty_cache()
+                        outputs = []
+                        for single_image, single_text in zip(image_payloads, texts):
+                            try:
+                                single_output = run_vintern_batch_generation(
+                                    model=model,
+                                    tokenizer=processor,
+                                    pixel_values_batch=[single_image],
+                                    prompts=[single_text],
+                                    max_new_tokens=args.max_new_tokens,
+                                )[0]
+                            except Exception as single_exc:
+                                if is_oom_error(single_exc):
+                                    torch.cuda.empty_cache()
+                                    single_output = json.dumps(
+                                        {"error": "cuda_oom_during_generation"},
+                                        ensure_ascii=False,
+                                    )
+                                else:
+                                    raise
+                            outputs.append(single_output)
+
+                for sample, raw_output, image_payload, sample_text in zip(
                     batch,
                     outputs,
-                    pil_images,
+                    image_payloads,
                     texts,
                 ):
                     error = None
@@ -977,18 +1211,27 @@ def main() -> None:
                             )
                             try:
                                 retry_text = build_retry_text(sample_text)
-                                retry_inputs = prepare_model_inputs(
-                                    processor=processor,
-                                    texts=[retry_text],
-                                    images=[sample_image],
-                                    input_device=input_device,
-                                )
-                                retry_output = run_batch_generation(
-                                    model=model,
-                                    processor=processor,
-                                    model_inputs=retry_inputs,
-                                    max_new_tokens=retry_tokens,
-                                )[0]
+                                if backend == "qwen":
+                                    retry_inputs = prepare_model_inputs(
+                                        processor=processor,
+                                        texts=[retry_text],
+                                        images=[image_payload],
+                                        input_device=input_device,
+                                    )
+                                    retry_output = run_batch_generation(
+                                        model=model,
+                                        processor=processor,
+                                        model_inputs=retry_inputs,
+                                        max_new_tokens=retry_tokens,
+                                    )[0]
+                                else:
+                                    retry_output = run_vintern_batch_generation(
+                                        model=model,
+                                        tokenizer=processor,
+                                        pixel_values_batch=[image_payload],
+                                        prompts=[retry_text],
+                                        max_new_tokens=retry_tokens,
+                                    )[0]
                                 parsed = parse_model_json(retry_output)
                                 raw_output = retry_output
                                 error = None
@@ -1017,8 +1260,9 @@ def main() -> None:
                         speed,
                     )
 
-                for image in pil_images:
-                    image.close()
+                for image_payload in image_payloads:
+                    if isinstance(image_payload, Image.Image):
+                        image_payload.close()
 
     elapsed = max(time.time() - started_at, 1e-6)
     logging.info(
