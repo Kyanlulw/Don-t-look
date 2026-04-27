@@ -290,6 +290,7 @@ def load_model_and_processor(
 
         # DO NOT use `with torch.device("cpu")` — it can still trigger meta init
         # in newer transformers. Just pass low_cpu_mem_usage=False with no device_map.
+        torch.set_default_device(None)
         model = AutoModel.from_pretrained(
             args.model,
             torch_dtype=torch_dtype,
