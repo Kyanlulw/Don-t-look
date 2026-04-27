@@ -288,17 +288,39 @@ def load_model_and_processor(
         if quantization_config is not None:
             logging.warning("4-bit quantization is ignored for Vintern backend.")
 
-        # DO NOT use `with torch.device("cpu")` — it can still trigger meta init
-        # in newer transformers. Just pass low_cpu_mem_usage=False with no device_map.
-        torch.set_default_device(None)
-        model = AutoModel.from_pretrained(
-            args.model,
-            torch_dtype=torch_dtype,
-            low_cpu_mem_usage=False,   # <-- this is the key flag
-            trust_remote_code=True,
-            use_flash_attn=False,
-            # no device_map at all
-        )
+        try:
+            model = AutoModel.from_pretrained(
+                args.model,
+                dtype=torch_dtype,
+                low_cpu_mem_usage=True,
+                trust_remote_code=True,
+                use_flash_attn=False,
+            )
+        except Exception as first_exc:
+            logging.warning(
+                "Primary Vintern load failed (%s). Retrying without use_flash_attn.",
+                first_exc,
+            )
+            try:
+                model = AutoModel.from_pretrained(
+                    args.model,
+                    dtype=torch_dtype,
+                    low_cpu_mem_usage=True,
+                    trust_remote_code=True,
+                )
+            except Exception as second_exc:
+                # Final safety fallback for environments that force meta initialization.
+                logging.warning(
+                    "Secondary Vintern load failed (%s). Retrying with low_cpu_mem_usage=False.",
+                    second_exc,
+                )
+                model = AutoModel.from_pretrained(
+                    args.model,
+                    dtype=torch_dtype,
+                    low_cpu_mem_usage=False,
+                    trust_remote_code=True,
+                )
+
         model = model.eval().cuda()
         tokenizer = AutoTokenizer.from_pretrained(
             args.model,
