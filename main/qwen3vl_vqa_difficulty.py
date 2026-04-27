@@ -314,7 +314,7 @@ def load_model_and_processor(
         try:
             model = AutoModel.from_pretrained(
                 args.model,
-                torch_dtype=torch_dtype,
+                dtype=torch_dtype,
                 low_cpu_mem_usage=True,
                 trust_remote_code=True,
                 use_flash_attn=False,
@@ -327,7 +327,7 @@ def load_model_and_processor(
             try:
                 model = AutoModel.from_pretrained(
                     args.model,
-                    torch_dtype=torch_dtype,
+                    dtype=torch_dtype,
                     low_cpu_mem_usage=True,
                     trust_remote_code=True,
                 )
@@ -339,7 +339,7 @@ def load_model_and_processor(
                 )
                 model = AutoModel.from_pretrained(
                     args.model,
-                    torch_dtype=torch_dtype,
+                    dtype=torch_dtype,
                     low_cpu_mem_usage=False,
                     trust_remote_code=True,
                 )
@@ -362,7 +362,7 @@ def load_model_and_processor(
     model = Qwen3VLForConditionalGeneration.from_pretrained(
         args.model,
         quantization_config=quantization_config,
-        torch_dtype=torch_dtype,
+        dtype=torch_dtype,
         device_map="auto",
         attn_implementation=args.attn_implementation,
         low_cpu_mem_usage=True,
