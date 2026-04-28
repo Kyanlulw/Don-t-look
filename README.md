@@ -14,7 +14,7 @@ Recommended install:
 
 ```powershell
 pip install -U torch torchvision --index-url https://download.pytorch.org/whl/cu121
-pip install -U transformers accelerate bitsandbytes pillow sentencepiece tqdm
+pip install -U transformers accelerate bitsandbytes pillow sentencepiece tqdm einops timm
 ```
 
 Recommended T4 run:

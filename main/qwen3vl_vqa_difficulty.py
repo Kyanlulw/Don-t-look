@@ -32,9 +32,9 @@ def get_transformers_major_version() -> int:
 
 
 TRANSFORMERS_MAJOR_VERSION = get_transformers_major_version()
-if TRANSFORMERS_MAJOR_VERSION > 5:
+try:
     from transformers import Qwen3VLForConditionalGeneration
-else:
+except ImportError:
     Qwen3VLForConditionalGeneration = None
 
 
@@ -319,6 +319,12 @@ def load_model_and_processor(
                 trust_remote_code=True,
                 use_flash_attn=False,
             )
+        except ImportError as exc:
+            raise RuntimeError(
+                "Vintern backend is missing required Python packages. "
+                "Install them with `pip install einops timm` or "
+                "`pip install -r requirements.txt`, then rerun."
+            ) from exc
         except Exception as first_exc:
             logging.warning(
                 "Primary Vintern load failed (%s). Retrying without use_flash_attn.",
@@ -331,18 +337,31 @@ def load_model_and_processor(
                     low_cpu_mem_usage=True,
                     trust_remote_code=True,
                 )
+            except ImportError as exc:
+                raise RuntimeError(
+                    "Vintern backend is missing required Python packages. "
+                    "Install them with `pip install einops timm` or "
+                    "`pip install -r requirements.txt`, then rerun."
+                ) from exc
             except Exception as second_exc:
                 # Final safety fallback for environments that force meta initialization.
                 logging.warning(
                     "Secondary Vintern load failed (%s). Retrying with low_cpu_mem_usage=False.",
                     second_exc,
                 )
-                model = AutoModel.from_pretrained(
-                    args.model,
-                    dtype=torch_dtype,
-                    low_cpu_mem_usage=False,
-                    trust_remote_code=True,
-                )
+                try:
+                    model = AutoModel.from_pretrained(
+                        args.model,
+                        dtype=torch_dtype,
+                        low_cpu_mem_usage=False,
+                        trust_remote_code=True,
+                    )
+                except ImportError as exc:
+                    raise RuntimeError(
+                        "Vintern backend is missing required Python packages. "
+                        "Install them with `pip install einops timm` or "
+                        "`pip install -r requirements.txt`, then rerun."
+                    ) from exc
 
         model = model.eval().cuda()
         tokenizer = AutoTokenizer.from_pretrained(
@@ -354,9 +373,9 @@ def load_model_and_processor(
 
     if Qwen3VLForConditionalGeneration is None:
         raise RuntimeError(
-            "Qwen backend requires transformers major version > 5 for "
-            "Qwen3VLForConditionalGeneration import. "
-            "Use --model-backend vintern or upgrade transformers."
+            "Qwen backend requires a transformers build that exports "
+            "`Qwen3VLForConditionalGeneration`. Upgrade transformers "
+            "or switch to `--model-backend vintern`."
         )
 
     model = Qwen3VLForConditionalGeneration.from_pretrained(
