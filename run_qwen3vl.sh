@@ -29,4 +29,4 @@ else
   shift "$#"
 fi
 
-ACCELERATE_INIT_DEVICE=cpu python main/qwen3vl_vqa_difficulty.py --input "${INPUT_JSON}" --input-2 "${INPUT_JSON_2}" --output "${OUTPUT_JSON}" --image-root "${IMAGE_ROOT}" --image-root-2 "${IMAGE_ROOT_2}" --range-1 "${RANGE_1}" --range-2 "${RANGE_2}" --model "${MODEL}" --model-backend qwen --prompt-style qwen --batch-size 16 --max-new-tokens 192 --short-side 336 --long-side 560 --max-pixels 188160 --seed "${SEED}" ${RESUME_FLAG} "$@"
+ACCELERATE_INIT_DEVICE=cpu python main/qwen3vl_vqa_difficulty.py --input "${INPUT_JSON}" --input-2 "${INPUT_JSON_2}" --output "${OUTPUT_JSON}" --image-root "${IMAGE_ROOT}" --image-root-2 "${IMAGE_ROOT_2}" --range-1 "${RANGE_1}" --range-2 "${RANGE_2}" --model "${MODEL}" --model-backend qwen --prompt-style qwen --batch-size 16 --max-new-tokens 192 --short-side 448 --long-side 747 --max-pixels 334656 --seed "${SEED}" ${RESUME_FLAG} "$@"
