@@ -7,11 +7,11 @@
 #   ./run_qwen3vl.sh data_a.json data_b.json scored.json . . --batch-size 2
 #   ./run_qwen3vl.sh data_a.jsonl scored.jsonl . --input-2 data_b.jsonl --range-1 0:1000 --range-2 200:1200 --pick-1 300 --pick-2 300 --seed 123
 
-INPUT_JSON="${1:-/kaggle/input/datasets/trnlqung/vitext-vqa/ViTextVQA_train.json}"
-INPUT_JSON_2="${2:-/kaggle/input/datasets/trnlqung/openvivqa/openvivqa_train_v2.json}"
+INPUT_JSON="${1:-/teamspace/studios/this_studio/.cache/kagglehub/datasets/trnlqung/vitext-vqa/versions/1/ViTextVQA_train.json}"
+INPUT_JSON_2="${2:-/teamspace/studios/this_studio/.cache/kagglehub/datasets/trnlqung/openvivqa/versions/1/openvivqa_train_v2.json}"
 OUTPUT_JSON="${3:-scored.json}"
-IMAGE_ROOT="${4:-/kaggle/input/datasets/trnlqung/vitext-vqa/ViTextVQA_images/st_images}"
-IMAGE_ROOT_2="${5:-/kaggle/input/datasets/trnlqung/openvivqa/images/images}"
+IMAGE_ROOT="${4:-/teamspace/studios/this_studio/.cache/kagglehub/datasets/trnlqung/vitext-vqa/versions/1/ViTextVQA_images/st_images}"
+IMAGE_ROOT_2="${5:-/teamspace/studios/this_studio/.cache/kagglehub/datasets/trnlqung/openvivqa/versions/1/images/images}"
 MODEL="5CD-AI/Vintern-1B-v3_5"
 RANGE_1="6202:25000"
 RANGE_2="3100:5000"
