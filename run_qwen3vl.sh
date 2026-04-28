@@ -13,7 +13,7 @@ OUTPUT_JSON="${3:-scored.json}"
 IMAGE_ROOT="${4:-/teamspace/studios/this_studio/.cache/kagglehub/datasets/trnlqung/vitext-vqa/versions/1/ViTextVQA_images/st_images}"
 IMAGE_ROOT_2="${5:-/teamspace/studios/this_studio/.cache/kagglehub/datasets/trnlqung/openvivqa/versions/1/images/images}"
 MODEL="Qwen/Qwen3-VL-8B-Instruct"
-RANGE_1="6202:15000"
+RANGE_1="15001:25000"
 RANGE_2="3100:5000"
 SEED="42"
 DISABLE_RESUME="${DISABLE_RESUME:-1}"
@@ -29,4 +29,4 @@ else
   shift "$#"
 fi
 
-ACCELERATE_INIT_DEVICE=cpu python main/qwen3vl_vqa_difficulty.py --input "${INPUT_JSON}" --input-2 "${INPUT_JSON_2}" --output "${OUTPUT_JSON}" --image-root "${IMAGE_ROOT}" --image-root-2 "${IMAGE_ROOT_2}" --range-1 "${RANGE_1}" --range-2 "${RANGE_2}" --model "${MODEL}" --model-backend qwen --prompt-style qwen --batch-size 16 --max-new-tokens 192 --short-side 448 --long-side 747 --max-pixels 334656 --seed "${SEED}" ${RESUME_FLAG} "$@"
+ACCELERATE_INIT_DEVICE=cpu python main/qwen3vl_vqa_difficulty.py --input "${INPUT_JSON}" --output "${OUTPUT_JSON}" --image-root "${IMAGE_ROOT}" --range-1 "${RANGE_1}"  --model "${MODEL}" --model-backend qwen --prompt-style qwen --batch-size 16 --max-new-tokens 192 --short-side 448 --long-side 747 --max-pixels 334656 --seed "${SEED}" ${RESUME_FLAG} "$@"
