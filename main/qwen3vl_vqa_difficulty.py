@@ -40,7 +40,8 @@ except ImportError:
 
 SYSTEM_PROMPT = (
     "You are an expert evaluator for Vietnamese scene-text VQA difficulty. "
-    "You must return exactly one valid JSON object and nothing else."
+    "You must return exactly one valid JSON object and nothing else. "
+    "Do not explain your answer. Do not use markdown. Do not wrap the JSON in code fences."
 )
 
 DEFAULT_WEIGHTS_FILE = Path(__file__).with_name("difficulty_weights.json")
@@ -80,7 +81,9 @@ Return ONLY valid JSON using full keys exactly (no abbreviations):
     "reasoning_required": <1-5>,
     "ocr_ambiguity": <1-5>
   }}
-}}"""
+}}
+
+Return one line of JSON only. Start with `{{` and end with `}}`."""
 
 
 def parse_args() -> argparse.Namespace:
@@ -391,6 +394,10 @@ def load_model_and_processor(
         min_pixels=28 * 28,
         max_pixels=args.max_pixels,
     )
+    if hasattr(processor, "tokenizer") and processor.tokenizer is not None:
+        processor.tokenizer.padding_side = "left"
+        if processor.tokenizer.pad_token_id is None:
+            processor.tokenizer.pad_token = processor.tokenizer.eos_token
     model.eval()
     return model, processor
 
@@ -1046,7 +1053,8 @@ def build_retry_text(base_prompt_text: str) -> str:
         base_prompt_text
         + "\n\nIMPORTANT: Your previous reply was invalid. "
         + "Return exactly one complete JSON object with the full key names. "
-        + "Do not add any explanation, markdown, or extra text."
+        + "Do not add any explanation, markdown, code fences, or extra text. "
+        + "Return one line of JSON only."
     )
 
 
